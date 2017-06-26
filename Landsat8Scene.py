@@ -22,6 +22,7 @@ _v_solar_elevation_angle = tt.dscalar('solarElev')
 _v_k1 = tt.dscalar('k1')
 _v_k2 = tt.dscalar('k2')
 _v_toa_radiance = tt.dvector('radiance')
+_v_float64 = tt.dvector('radiance')
 
 # ####### Theano expressions ################
 _e_conversion_to_toa = _v_band_scaling_multiplier * _v_pixel_value + _v_band_scaling_additive
@@ -89,6 +90,7 @@ class LandsatScene:
         self.dataframe = None
         self._metadata = None
         self._profile = None
+        self._shape = None
 
     def download_scene_from(self, url: str, will_overwrite=None, http_pool_manager=urllib3.PoolManager()):
         # TODO: Batch download version
@@ -157,7 +159,8 @@ class LandsatScene:
                 self._profile = image.profile
                 if df is None:
                     df = pandas.DataFrame(index=numpy.arange(image.width * image.height))
-                df['band%i' % band_number] = image.read().flatten()
+                self._shape = image.read(1).shape
+                df['band%i' % band_number] = image.read(1).flatten()
             print_progress_bar(band_number, len(bands), "Loading {} to dataframe:".format(self.scene_id), length=50)
         self.dataframe = df
         return self
@@ -171,12 +174,12 @@ class LandsatScene:
         self.dataframe = self.dataframe.loc[(self.dataframe != 0).any(1)]
         return self
 
-    def write_fmask_outputs(self):
-        ndvi_series = fmask.calculate_ndvi(self._read_series_from_csv('band5reflectance'),
-                                           self._read_series_from_csv('band4reflectance'))
-        self._write_series_to_csv(ndvi_series, 'ndvi')
+    def calculate_fmask_outputs(self):
+        self.dataframe['ndvi'] = fmask.calculate_ndvi(self.dataframe['band5reflectance'],
+                                                      self.dataframe['band4reflectance'])
+        return self
 
-    def write_fmask_inputs(self):
+    def calculate_fmask_inputs(self):
         """
         The GeoTIFFs we read have uint16 values, not in the units we want. But each scene is accompanied by a
         metadata file that has values -- some global, some for specific bands -- that we can use to convert the pixel
@@ -187,47 +190,33 @@ class LandsatScene:
         :return: self
         """
         solar_zenith_angle = float(self._metadata['SUN_AZIMUTH'])
-        for df in self._generate_dataframe_chunks():
-            for band_number in self.LANDSAT8_BANDS:
-                bn = 'band' + str(band_number)
+        df = self.dataframe
+        for band_number in self.LANDSAT8_BANDS:
+            bn = 'band' + str(band_number)
+            try:
+                radiance_mult = float(self._metadata['RADIANCE_MULT_BAND_%i' % band_number])
+                radiance_add = float(self._metadata['RADIANCE_ADD_BAND_%i' % band_number])
+                df[bn + 'radiance'] = _f_toa_uncorrected(radiance_mult, df[bn], radiance_add)
                 try:
-                    radiance_mult = float(self._metadata['RADIANCE_MULT_BAND_%i' % band_number])
-                    radiance_add = float(self._metadata['RADIANCE_ADD_BAND_%i' % band_number])
-                    series_radiance = _f_toa_uncorrected(radiance_mult, df[bn], radiance_add)
-                    self._append_series_to_csv(series_radiance, bn + 'radiance')
-                    try:
-                        k1 = float(self._metadata['K1_CONSTANT_BAND_%i' % band_number])
-                        k2 = float(self._metadata['K2_CONSTANT_BAND_%i' % band_number])
-                        self._append_series_to_csv(_f_brightness_temp(k1, k2, series_radiance), bn + 'bt')
-                    except KeyError as _:
-                        pass
-                    del series_radiance
+                    k1 = float(self._metadata['K1_CONSTANT_BAND_%i' % band_number])
+                    k2 = float(self._metadata['K2_CONSTANT_BAND_%i' % band_number])
+                    df[bn + 'bt'] = _f_brightness_temp(k1, k2,  df[bn + 'radiance'])
                 except KeyError as _:
                     pass
-                try:
-                    reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
-                    reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
-                    series_reflect_uncorrected = _f_toa_uncorrected(reflectance_mult, df[bn], reflectance_add)
-                    series_reflect_corrected = _f_toa_corrected(series_reflect_uncorrected, solar_zenith_angle)
-                    self._append_series_to_csv(series_reflect_corrected, bn + 'reflectance')
-                    del series_reflect_uncorrected, series_reflect_corrected
-                except KeyError as _:
-                    pass
+            except KeyError as _:
+                pass
+            try:
+                reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
+                reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
+                series_reflect_uncorrected = _f_toa_uncorrected(reflectance_mult, df[bn], reflectance_add)
+                series_reflect_corrected = _f_toa_corrected(series_reflect_uncorrected, solar_zenith_angle)
+                df[bn + 'reflectance'] = series_reflect_corrected
+            except KeyError as _:
+                pass
+        self.dataframe = df
         return self
 
     # ################################### HELPERS ##############################################
-
-    def _generate_dataframe_chunks(self, chunk_size=100 * 1000) -> pandas.DataFrame:
-        l = 0
-        i = 0
-        num_chunks = int(numpy.math.ceil(len(self.dataframe) / chunk_size))
-        print()
-        while l < len(self.dataframe):
-            print_progress_bar(i, num_chunks, prefix="Processing image into CSVs: ")
-            r = l + chunk_size
-            yield self.dataframe[l:r]
-            l = r
-        print_progress_bar(i, num_chunks, prefix="Processing image into CSVs: ")
 
     def _get_metadata(self):
         metadata = dict()
@@ -275,6 +264,16 @@ class LandsatScene:
     def _read_series_from_csv(self, filename: str):
         return pandas.Series.from_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename))
 
+    def dataframe_write_series_to_geotiff(self, series_name: str):
+        ds = self.dataframe[series_name]
+        image_array = ds.reshape(self._shape)
+        filepath = '{0}{1}.tif'.format(self.get_local_directory_url(), series_name)
+        print("Writing {}".format(filepath))
+        self._profile['dtype'] = str(ds.dtype)
+        with rasterio.open(filepath, 'w', **self._profile) as filehandle:
+            filehandle.write(image_array, 1)
+        return self
+
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
@@ -282,5 +281,6 @@ if __name__ == '__main__':
           .download_scene_from_aws(will_overwrite=False)
           .dataframe_generate()
           # .dataframe_drop_dead_pixels()
-          .write_fmask_inputs()
-          .write_fmask_outputs())
+          .calculate_fmask_inputs()
+          .calculate_fmask_outputs()
+          .dataframe_write_series_to_geotiff('ndvi'))
