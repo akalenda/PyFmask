@@ -266,7 +266,7 @@ class LandsatScene:
 
     def dataframe_write_series_to_geotiff(self, series_name: str):
         ds = self.dataframe[series_name]
-        image_array = ds.reshape(self._shape)
+        image_array = ds.values.reshape(self._shape)
         filepath = '{0}{1}.tif'.format(self.get_local_directory_url(), series_name)
         print("Writing {}".format(filepath))
         self._profile['dtype'] = str(ds.dtype)
