@@ -265,7 +265,8 @@ class LandsatScene:
         return pandas.Series.from_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename))
 
     def dataframe_write_series_to_geotiff(self, series_name: str):
-        ds = self.dataframe[series_name]
+        ds = self.dataframe[series_name].reindex(index=numpy.arange(self._shape[0] * self._shape[1]),
+                                                 fill_value=numpy.nan)
         image_array = ds.values.reshape(self._shape)
         filepath = '{0}{1}.tif'.format(self.get_local_directory_url(), series_name)
         print("Writing {}".format(filepath))
@@ -280,7 +281,7 @@ if __name__ == '__main__':
     print(LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[1])
           .download_scene_from_aws(will_overwrite=False)
           .dataframe_generate()
-          # .dataframe_drop_dead_pixels()
+          .dataframe_drop_dead_pixels()
           .calculate_fmask_inputs()
           .calculate_fmask_outputs()
           .dataframe_write_series_to_geotiff('ndvi'))
