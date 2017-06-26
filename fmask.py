@@ -73,7 +73,6 @@ v0_cirrus = tt.dvector('v0_cirrus')
 v0_bt1 = tt.dvector('v0_bt1')
 v1_ndsi = tt.dvector('v1_ndsi')
 v1_ndvi = tt.dvector('v1_ndvi')
-v2_mean_vis = tt.dvector('v2_mean_vis')
 v2_whiteness = tt.dvector('v2_whiteness')
 v10_brightness_prob = tt.dvector('v10_brightness_prob')
 v20151_cirrus_cloud_probability = tt.dvector('v0_cirrus')
@@ -81,7 +80,6 @@ v14_l_temperature_prob = tt.dvector('v14_l_temperature_prob')
 v15_variability_prob = tt.dvector('v15_variability_prob')
 
 # ############################### Theano Expressions ######################################
-e1_ndsi = (v0_green - v0_swir1) / (v0_green + v0_swir1)
 e1_basic_test = tt.and_(
     tt.and_(
         tt.lt(C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS, v0_swir2),
@@ -92,6 +90,38 @@ e1_basic_test = tt.and_(
         tt.lt(v1_ndvi, C1_MAX_NDVI_OF_CLOUDS)
     )
 )
+
+
+def calculate_ndvi(nir_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
+    e1_ndvi = (v0_nir - v0_red) / (v0_nir + v0_red)
+    return theano.function([v0_nir, v0_red], e1_ndvi)(nir_reflectance, red_reflectance)
+
+
+def calculate_ndsi(green_reflectance: pandas.Series, swir1_reflectance: pandas.Series) -> pandas.Series:
+    e1_ndsi = (v0_green - v0_swir1) / (v0_green + v0_swir1)
+    return theano.function([v0_green, v0_swir1], e1_ndsi)(green_reflectance, swir1_reflectance)
+
+
+def calculate_whiteness(blue_reflectance: pandas.Series, green_reflectance: pandas.Series,
+                        red_reflectance: pandas.Series) -> pandas.Series:
+    v2_mean_vis = tt.dvector('v2_mean_vis')
+    e2_mean_vis = (v0_blue + v0_green + v0_red) / 3
+    mean_vis = theano.function([v0_blue, v0_green, v0_red],
+                               e2_mean_vis)(blue_reflectance, green_reflectance, red_reflectance)
+    e2_whiteness = (tt.abs_(v0_blue - v2_mean_vis) / v2_mean_vis + tt.abs_(v0_green - v2_mean_vis) / v2_mean_vis
+                    + tt.abs_(v0_red - v2_mean_vis) / v2_mean_vis)
+    return theano.function([v0_blue, v0_green, v0_red, v2_mean_vis],
+                           e2_whiteness)(blue_reflectance, green_reflectance, red_reflectance, mean_vis)
+
+
+def test_hot(blue_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
+    e3_hot_test = 2.0 * v0_blue - v0_red > C3_HOT_OFFSET
+    return theano.function([v0_blue, v0_red], e3_hot_test)(blue_reflectance, red_reflectance)
+
+
+def test_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Series) -> pandas.Series:
+    e4_b4b5_test = v0_nir > 0.75 * v0_swir1
+    return theano.function([v0_nir, v0_swir1], e4_b4b5_test)(nir_reflectance, swir1_reflectance)
 
 
 def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
@@ -115,23 +145,14 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     This test cuts out pixels that are clearly just snow or vegetation, or that are too warm to be clouds.
     """
     print('Formula1')
-    df['ndsi'] = theano.function([v0_green, v0_swir1], e1_ndsi)(df_green, df_swir1)
     df['basic_test'] = theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(df_swir2, df_bt1,
                                                                                             df['ndsi'], df['ndvi'])
-
-
 
     """
     This test cuts out pixels that have too much color saturation (e.g. they are not white). The idea is
     that their blue/yellow/red values should be fairly close to one another.
     """
     print('Formula2')
-    e2_mean_vis = (v0_blue + v0_green + v0_red) / 3
-    e2_whiteness = (tt.abs_(v0_blue - v2_mean_vis) / v2_mean_vis + tt.abs_(v0_green - v2_mean_vis) / v2_mean_vis
-                    + tt.abs_(v0_red - v2_mean_vis) / v2_mean_vis)
-    df['mean_vis'] = theano.function([v0_blue, v0_green, v0_red], e2_mean_vis)(df_blue, df_green, df_red)
-    df['whiteness'] = theano.function([v0_blue, v0_green, v0_red, v2_mean_vis],
-                                      e2_whiteness)(df_blue, df_green, df_red, df['mean_vis'])
 
     """
     This test identifies thin cloud or haze.
@@ -140,16 +161,12 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     positives for rocks, turbid water, snow or ice.
     """
     print('Formula3')
-    e3_hot_test = 2.0 * v0_blue - v0_red > C3_HOT_OFFSET
-    df['hot_test'] = theano.function([v0_blue, v0_red], e3_hot_test)(df_blue, df_red)
 
     """
     This test cuts out objects that may look like thin cloud or haze in prior tests, but are in fact simply bright
     rocks. It may still include some clear-sky pixels.
     """
     print('Formula4')
-    e4_b4b5_test = v0_nir > 0.75 * v0_swir1
-    df['b4b5_test'] = theano.function([v0_nir, v0_swir1], e4_b4b5_test)(df_nir, df_swir1)
 
     """
     Formula 5 from [Zhu 2012] is split into three parts, as each may be useful in its own right.
@@ -274,23 +291,4 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
 
     return df
 
-
 # ######################### EXAMPLE USAGE ######################################
-if __name__ == '__main__':
-    print(fmask(LandsatScene(LandsatScene.EXAMPLE_SCENE_ID)
-                .download_scene_from_aws(will_overwrite=False)
-                .dataframe_generate()
-                .dataframe_drop_dead_pixels()
-                ._write_fmask_inputs()
-                .dataframe))
-
-
-def calculate_ndvi(nir_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
-    e1_ndvi = (v0_nir - v0_red) / (v0_nir + v0_red)
-    return theano.function([v0_nir, v0_red], e1_ndvi)(nir_reflectance, red_reflectance)
-
-
-def convert_to_uint(data: pandas.Series, min_datum: float, max_datum: float) -> pandas.Series:
-    v_data = tt.dvector('v_data')
-    e_convert_to_uint = v_data / max_datum * (max_datum - min_datum) + min_datum
-    return theano.function([v_data], e_convert_to_uint)(data).astype('uint16')
