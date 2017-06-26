@@ -45,7 +45,7 @@ class LandsatScene:
     """
 
     EXAMPLE_SCENE_IDS = [
-        'LC80440342014077LGN00'
+        'LC80440342014077LGN00',
         'LC81400472015145LGN00'
     ]
     DATA_DIRECTORY = "./data/"
@@ -104,11 +104,12 @@ class LandsatScene:
         metadata_filename = re.search('"L.*_MTL.txt"', response_text).group()[1:-1]
         geotiff_filenames = [match.group()[1:-1] for match in re.finditer('"L.*.TIF"', response_text)]
         n = len(geotiff_filenames)
+        print_progress_bar(0, n, 'Downloading' + self.scene_id)
         for i in range(n):
             self._download(url, geotiff_filenames[i], http_pool_manager)
-            print_progress_bar(i, n, 'Downloading' + self.scene_id)
+            print_progress_bar(i, n, 'Downloading ' + self.scene_id)
         self._download(url, metadata_filename, http_pool_manager)
-        print_progress_bar(n, n, 'Downloading' + self.scene_id)
+        print_progress_bar(n, n, 'Downloading ' + self.scene_id)
         return self
 
     def _download(self, remote_directory: str, filename: str, http_pool_manager: urllib3.PoolManager):
@@ -170,7 +171,12 @@ class LandsatScene:
         self.dataframe = self.dataframe.loc[(self.dataframe != 0).any(1)]
         return self
 
-    def dataframe_adjust_for_metadata(self):
+    def write_fmask_outputs(self):
+        ndvi_series = fmask.calculate_ndvi(self._read_series_from_csv('band5reflectance'),
+                                           self._read_series_from_csv('band4reflectance'))
+        self._write_series_to_csv(ndvi_series, 'ndvi')
+
+    def write_fmask_inputs(self):
         """
         The GeoTIFFs we read have uint16 values, not in the units we want. But each scene is accompanied by a
         metadata file that has values -- some global, some for specific bands -- that we can use to convert the pixel
@@ -181,48 +187,47 @@ class LandsatScene:
         :return: self
         """
         solar_zenith_angle = float(self._metadata['SUN_AZIMUTH'])
-        for df in self._generate_dataframe_chunks()
+        for df in self._generate_dataframe_chunks():
             for band_number in self.LANDSAT8_BANDS:
                 bn = 'band' + str(band_number)
-                radiance_mult = float(self._metadata['RADIANCE_MULT_BAND_%i' % band_number])
-                radiance_add = float(self._metadata['RADIANCE_ADD_BAND_%i' % band_number])
-                reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
-                reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
-                k1 = float(self._metadata['K1_CONSTANT_BAND_%i' % band_number])
-                k2 = float(self._metadata['K2_CONSTANT_BAND_%i' % band_number])
                 try:
-                    bnr = bn + '_radiance'
-                    df[bnr] = _f_toa_uncorrected(radiance_mult, df[bn], radiance_add)
-
+                    radiance_mult = float(self._metadata['RADIANCE_MULT_BAND_%i' % band_number])
+                    radiance_add = float(self._metadata['RADIANCE_ADD_BAND_%i' % band_number])
+                    series_radiance = _f_toa_uncorrected(radiance_mult, df[bn], radiance_add)
+                    self._append_series_to_csv(series_radiance, bn + 'radiance')
                     try:
-                        df[bn + '_bt'] = _f_brightness_temp(k1, k2, df[bnr])
+                        k1 = float(self._metadata['K1_CONSTANT_BAND_%i' % band_number])
+                        k2 = float(self._metadata['K2_CONSTANT_BAND_%i' % band_number])
+                        self._append_series_to_csv(_f_brightness_temp(k1, k2, series_radiance), bn + 'bt')
                     except KeyError as _:
                         pass
+                    del series_radiance
                 except KeyError as _:
                     pass
                 try:
-                    bnru = bn + '_reflectance_uncorrected'
-                    df[bnru] = _f_toa_uncorrected(reflectance_mult, df[bn], reflectance_add)
-                    df[bn + '_reflectance_corrected'] = _f_toa_corrected(df[bnru], solar_zenith_angle)
+                    reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
+                    reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
+                    series_reflect_uncorrected = _f_toa_uncorrected(reflectance_mult, df[bn], reflectance_add)
+                    series_reflect_corrected = _f_toa_corrected(series_reflect_uncorrected, solar_zenith_angle)
+                    self._append_series_to_csv(series_reflect_corrected, bn + 'reflectance')
+                    del series_reflect_uncorrected, series_reflect_corrected
                 except KeyError as _:
                     pass
-        return self
-
-    def write_ndvi(self):
-        df_ndvi = fmask.get_ndvi_from(self.dataframe, must_convert_to_uint16=True)
-        output_path = '{0}{1}/{1}_NVDI.tif'.format(self.DATA_DIRECTORY, self.scene_id)
-        with rasterio.open(output_path, 'w', **self._profile) as image_output:
-            image_output.write(df_ndvi, 1)
         return self
 
     # ################################### HELPERS ##############################################
 
-    def _generate_dataframe_chunks(self, chunk_size=100*1000) -> pandas.DataFrame:
+    def _generate_dataframe_chunks(self, chunk_size=100 * 1000) -> pandas.DataFrame:
         l = 0
+        i = 0
+        num_chunks = int(numpy.math.ceil(len(self.dataframe) / chunk_size))
+        print()
         while l < len(self.dataframe):
+            print_progress_bar(i, num_chunks, prefix="Processing image into CSVs: ")
             r = l + chunk_size
             yield self.dataframe[l:r]
             l = r
+        print_progress_bar(i, num_chunks, prefix="Processing image into CSVs: ")
 
     def _get_metadata(self):
         metadata = dict()
@@ -240,7 +245,7 @@ class LandsatScene:
         """
         :return: The directory on the local machine where we expect to find the data for this LandsatScene
         """
-        return '{0}/{1}'.format(self.DATA_DIRECTORY, self.scene_id)
+        return '{0}{1}/'.format(self.DATA_DIRECTORY, self.scene_id)
 
     def get_aws_directory_url(self) -> str:
         """
@@ -260,12 +265,22 @@ class LandsatScene:
             return False
         return path.exists('{0}{1}/'.format(self.DATA_DIRECTORY, self.scene_id))
 
+    def _write_series_to_csv(self, ds: pandas.Series, filename: str):
+        ds.to_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename), mode='w', index=True)
+
+    def _append_series_to_csv(self, ds: pandas.Series, filename: str):
+        pandas.Series(ds).to_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename),
+                                 mode='a', index=True)
+
+    def _read_series_from_csv(self, filename: str):
+        return pandas.Series.from_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename))
+
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    print(LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[0])
+    print(LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[1])
           .download_scene_from_aws(will_overwrite=False)
           .dataframe_generate()
           # .dataframe_drop_dead_pixels()
-          .dataframe_adjust_for_metadata()
-          .write_ndvi())
+          .write_fmask_inputs()
+          .write_fmask_outputs())

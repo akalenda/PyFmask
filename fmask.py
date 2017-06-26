@@ -281,7 +281,7 @@ if __name__ == '__main__':
                 .download_scene_from_aws(will_overwrite=False)
                 .dataframe_generate()
                 .dataframe_drop_dead_pixels()
-                .dataframe_adjust_for_metadata()
+                ._write_fmask_inputs()
                 .dataframe))
 
 
