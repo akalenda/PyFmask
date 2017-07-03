@@ -39,8 +39,6 @@ import pandas
 import theano
 import theano.tensor as tt
 
-from Landsat8Scene import LandsatScene
-
 """
 Constants rom [Zhu 2012]. A variety of constants sprinkled throughout the white-paper.
 """
@@ -79,18 +77,6 @@ v20151_cirrus_cloud_probability = tt.dvector('v0_cirrus')
 v14_l_temperature_prob = tt.dvector('v14_l_temperature_prob')
 v15_variability_prob = tt.dvector('v15_variability_prob')
 
-# ############################### Theano Expressions ######################################
-e1_basic_test = tt.and_(
-    tt.and_(
-        tt.lt(C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS, v0_swir2),
-        tt.lt(v0_bt1, C1_MAX_BT_OF_CLOUDS)
-    ),
-    tt.and_(
-        tt.lt(v1_ndsi, C1_MAX_NDSI_OF_CLOUDS),
-        tt.lt(v1_ndvi, C1_MAX_NDVI_OF_CLOUDS)
-    )
-)
-
 
 def calculate_ndvi(nir_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
     e1_ndvi = (v0_nir - v0_red) / (v0_nir + v0_red)
@@ -108,8 +94,8 @@ def calculate_whiteness(blue_reflectance: pandas.Series, green_reflectance: pand
     e2_mean_vis = (v0_blue + v0_green + v0_red) / 3
     mean_vis = theano.function([v0_blue, v0_green, v0_red],
                                e2_mean_vis)(blue_reflectance, green_reflectance, red_reflectance)
-    e2_whiteness = (tt.abs_(v0_blue - v2_mean_vis) / v2_mean_vis + tt.abs_(v0_green - v2_mean_vis) / v2_mean_vis
-                    + tt.abs_(v0_red - v2_mean_vis) / v2_mean_vis)
+    e2_whiteness = 1 - (tt.abs_(v0_blue - v2_mean_vis) / v2_mean_vis + tt.abs_(v0_green - v2_mean_vis) / v2_mean_vis
+                        + tt.abs_(v0_red - v2_mean_vis) / v2_mean_vis)
     return theano.function([v0_blue, v0_green, v0_red, v2_mean_vis],
                            e2_whiteness)(blue_reflectance, green_reflectance, red_reflectance, mean_vis)
 
@@ -124,17 +110,46 @@ def test_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Series) 
     return theano.function([v0_nir, v0_swir1], e4_b4b5_test)(nir_reflectance, swir1_reflectance)
 
 
+def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: pandas.Series, ndvi: pandas.Series):
+    e1_basic_test = tt.and_(
+        tt.and_(
+            tt.lt(C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS, v0_swir2),
+            tt.lt(v0_bt1, C1_MAX_BT_OF_CLOUDS)
+        ),
+        tt.and_(
+            tt.lt(v1_ndsi, C1_MAX_NDSI_OF_CLOUDS),
+            tt.lt(v1_ndvi, C1_MAX_NDVI_OF_CLOUDS)
+        )
+    )
+    return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
+
+
+def test_clearsky_water(swir2_reflectance: pandas.Series) -> pandas.Series:
+    # Combines the two expressions of formula 5 with that of formula 7
+    e7_clearsky_water = tt.and_(
+        tt.or_(
+            tt.and_(v1_ndvi < 0.01, v0_nir < 0.11),
+            tt.and_(v1_ndvi < NDVI_WATER_LAND_THRESHOLD, v0_nir < 0.05)
+        ),
+        v0_swir2 < C7_MIN_SWIR_OF_CLOUD
+    )
+    return theano.function([v0_swir2], e7_clearsky_water)(swir2_reflectance)
+
+
+def calculate_w_temperature_prob(swir1_reflectance_of_clearskies_over_water: pandas.Series,
+                                 tirs1_bt: pandas.Series) -> pandas.Series:
+    # noinspection PyTypeChecker
+    c8_t_water = numpy.percentile(swir1_reflectance_of_clearskies_over_water,
+                                  C8_PERCENTILE_FOR_CLEARSKY_WATER_TEMPERATURE)
+    e9_w_temperature_prob = (c8_t_water - v0_bt1) / 4
+    return theano.function([v0_bt1], e9_w_temperature_prob)(tirs1_bt)
+
+
 def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     # ############################### DataFrame column aliases ##########################################
-    df_blue = df['band2_reflectance_corrected']
-    df_green = df['band3_reflectance_corrected']
-    df_red = df['band4_reflectance_corrected']
-    df_nir = df['band5_reflectance_corrected']
     df_swir1 = df['band6_reflectance_corrected']
-    df_swir2 = df['band7_reflectance_corrected']
     df_cirrus = df['band9_reflectance_corrected']
     df_bt1 = df['band10_bt']
-    df_bt2 = df['band11_bt']
     # TODO: Currently we are not using bt2. The original fmask used a single TIRS band for brightness temperature,
     # whereas Landsat8 provides two bands that collectively cover a wider spectrum. We could probably average the two
     # and use that with the original formulae. But since the two bands provide greater resolution, we should look into
@@ -145,51 +160,23 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     This test cuts out pixels that are clearly just snow or vegetation, or that are too warm to be clouds.
     """
     print('Formula1')
-    df['basic_test'] = theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(df_swir2, df_bt1,
-                                                                                            df['ndsi'], df['ndvi'])
-
-    """
-    This test cuts out pixels that have too much color saturation (e.g. they are not white). The idea is
-    that their blue/yellow/red values should be fairly close to one another.
-    """
-    print('Formula2')
-
-    """
-    This test identifies thin cloud or haze.
-    Blue light scatters more efficiently these substances. Therefore, if there is significantly more red
-    than blue in the pixel, then we can eliminate the possibility of it being cloud. This may include false
-    positives for rocks, turbid water, snow or ice.
-    """
-    print('Formula3')
-
-    """
-    This test cuts out objects that may look like thin cloud or haze in prior tests, but are in fact simply bright
-    rocks. It may still include some clear-sky pixels.
-    """
-    print('Formula4')
 
     """
     Formula 5 from [Zhu 2012] is split into three parts, as each may be useful in its own right.
     This one is true if the pixel suggests thin clouds over water.
     """
     print('Formula5a')
-    e5_is_thincloud_or_turbidwater = tt.and_(v1_ndvi < NDVI_WATER_LAND_THRESHOLD, v0_nir < 0.05)
-    df['is_thincloud_or_turbidwater'] = \
-        theano.function([v1_ndvi, v0_nir], e5_is_thincloud_or_turbidwater)(df['ndvi'], df_nir)
 
     """
     This one suggests clear skies over water if true.
     """
     print('Formula5b')
-    e5_is_clearsky_water = tt.and_(v1_ndvi < 0.01, v0_nir < 0.11)
-    df['is_clearsky_water'] = theano.function([v1_ndvi, v0_nir], e5_is_clearsky_water)(df['ndvi'], df_nir)
 
     """
     This one evaluates to True if it is definitely water, either with clear skies or thin cloud. False if it is land, 
     thick clouds over land, or thick clouds over water.
     """
     print('Formula5c')
-    df['water_test'] = df['is_thincloud_or_turbidwater'] | df['is_clearsky_water']
 
     """
     This test produces true values for pixels that have a high probability of being cloud.
@@ -203,8 +190,6 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     """
     # TODO: Shouldn't this just be folded into the original test then?
     print('Formula7')
-    e7_clearsky_water = v0_swir2 < C7_MIN_SWIR_OF_CLOUD
-    df['clearsky_water'] = df['water_test'] & theano.function([v0_swir2], e7_clearsky_water)(df_swir2)
 
     """
     For pixels which are water under clear skies, estimate the temperature
@@ -212,14 +197,6 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     print('Formula8')
     # TODO: What if all the water is under clouds? What if there's no water at all?
     # noinspection PyTypeChecker
-    c8_t_water = numpy.percentile(df[df['clearsky_water']]['band6_reflectance_corrected'],
-                                  C8_PERCENTILE_FOR_CLEARSKY_WATER_TEMPERATURE)
-
-    """
-    """
-    print('Formula9')
-    e9_w_temperature_prob = (c8_t_water - v0_bt1) / 4
-    df['w_temperature_prob'] = theano.function([v0_bt1], e9_w_temperature_prob)(df_bt1)
 
     """
     """
@@ -283,11 +260,6 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     df['l_cloud_prob'] = theano.function([v14_l_temperature_prob, v15_variability_prob],
                                          e16_l_cloud_prob)(df['l_temperature_prob'], df['variability_prob'])
 
-    """
-    """
-    print("Formula17")
-    df
-    c17_land_threshold = numpy.percentile()
 
     return df
 

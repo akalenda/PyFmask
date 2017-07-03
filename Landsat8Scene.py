@@ -36,6 +36,10 @@ _f_toa_corrected = theano.function([_v_toa_uncorrected_reflectance, _v_solar_zen
 _f_brightness_temp = theano.function([_v_k1, _v_k2, _v_toa_radiance], _e_conversion_to_bt)
 
 
+def _negatives_to_nans_in(data: pandas.Series) -> pandas.Series:
+    return pandas.Series(data).where(data >= 0, numpy.nan)  # eats loads of memory if not in-place
+
+
 class LandsatScene:
     """
     This class is largely concerned with fetching Landsat satellite imagery, extracting their raw data, and presenting
@@ -177,6 +181,8 @@ class LandsatScene:
     def calculate_fmask_outputs(self):
         self.dataframe['ndvi'] = fmask.calculate_ndvi(self.dataframe['band5reflectance'],
                                                       self.dataframe['band4reflectance'])
+        self.dataframe['whiteness'] = fmask.calculate_whiteness(
+            self.dataframe['band2reflectance'], self.dataframe['band3reflectance'], self.dataframe['band4reflectance'])
         return self
 
     def calculate_fmask_inputs(self):
@@ -189,7 +195,6 @@ class LandsatScene:
         See: https://landsat.usgs.gov/using-usgs-landsat-8-product
         :return: self
         """
-        solar_zenith_angle = float(self._metadata['SUN_AZIMUTH'])
         df = self.dataframe
         for band_number in self.LANDSAT8_BANDS:
             bn = 'band' + str(band_number)
@@ -200,17 +205,13 @@ class LandsatScene:
                 try:
                     k1 = float(self._metadata['K1_CONSTANT_BAND_%i' % band_number])
                     k2 = float(self._metadata['K2_CONSTANT_BAND_%i' % band_number])
-                    df[bn + 'bt'] = _f_brightness_temp(k1, k2,  df[bn + 'radiance'])
+                    df[bn + 'bt'] = _f_brightness_temp(k1, k2, df[bn + 'radiance'])
                 except KeyError as _:
                     pass
             except KeyError as _:
                 pass
             try:
-                reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
-                reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
-                series_reflect_uncorrected = _f_toa_uncorrected(reflectance_mult, df[bn], reflectance_add)
-                series_reflect_corrected = _f_toa_corrected(series_reflect_uncorrected, solar_zenith_angle)
-                df[bn + 'reflectance'] = series_reflect_corrected
+                df[bn + 'reflectance'] = self._calculate_reflectance(df, band_number)
             except KeyError as _:
                 pass
         self.dataframe = df
@@ -265,8 +266,12 @@ class LandsatScene:
         return pandas.Series.from_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename))
 
     def dataframe_write_series_to_geotiff(self, series_name: str):
-        ds = self.dataframe[series_name].reindex(index=numpy.arange(self._shape[0] * self._shape[1]),
-                                                 fill_value=numpy.nan)
+        self.write_to_geotiff(self.dataframe[series_name], series_name)
+        return self
+
+    def write_to_geotiff(self, ds: pandas.Series, series_name: str):
+        ds = ds.reindex(index=numpy.arange(self._shape[0] * self._shape[1]),
+                        fill_value=numpy.nan)
         image_array = ds.values.reshape(self._shape)
         filepath = '{0}{1}.tif'.format(self.get_local_directory_url(), series_name)
         print("Writing {}".format(filepath))
@@ -275,13 +280,20 @@ class LandsatScene:
             filehandle.write(image_array, 1)
         return self
 
+    def _calculate_reflectance(self, df: pandas.DataFrame, band_number: int):
+        solar_zenith_angle = float(self._metadata['SUN_AZIMUTH'])
+        reflectance_mult = float(self._metadata['REFLECTANCE_MULT_BAND_%i' % band_number])
+        reflectance_add = float(self._metadata['REFLECTANCE_ADD_BAND_%i' % band_number])
+        return _f_toa_corrected(_f_toa_uncorrected(reflectance_mult, df['band%s' % band_number], reflectance_add),
+                                solar_zenith_angle)
+
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    print(LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[1])
-          .download_scene_from_aws(will_overwrite=False)
-          .dataframe_generate()
-          .dataframe_drop_dead_pixels()
-          .calculate_fmask_inputs()
-          .calculate_fmask_outputs()
-          .dataframe_write_series_to_geotiff('ndvi'))
+    x = (LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[1])
+         .download_scene_from_aws(will_overwrite=False)
+         .dataframe_generate()
+         .dataframe_drop_dead_pixels()
+         .calculate_fmask_inputs()
+         .calculate_fmask_outputs())
+    x.write_to_geotiff(x.dataframe['whiteness'][x.dataframe['whiteness'] > 0.8], 'whiteness_mask')
