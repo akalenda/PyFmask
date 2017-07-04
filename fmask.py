@@ -150,10 +150,6 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     df_swir1 = df['band6_reflectance_corrected']
     df_cirrus = df['band9_reflectance_corrected']
     df_bt1 = df['band10_bt']
-    # TODO: Currently we are not using bt2. The original fmask used a single TIRS band for brightness temperature,
-    # whereas Landsat8 provides two bands that collectively cover a wider spectrum. We could probably average the two
-    # and use that with the original formulae. But since the two bands provide greater resolution, we should look into
-    # how those two bands respond differently to various surfaces (clouds, water, land, vegetation, rocks, etc).
 
     # ################ Formulae from [Zhu 2012] #######################################################
     """

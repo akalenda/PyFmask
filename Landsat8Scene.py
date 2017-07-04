@@ -97,7 +97,6 @@ class LandsatScene:
         self._shape = None
 
     def download_scene_from(self, url: str, will_overwrite=None, http_pool_manager=urllib3.PoolManager()):
-        # TODO: Batch download version
         if self.scene_appears_downloaded():
             if will_overwrite is False:
                 return self
@@ -150,7 +149,6 @@ class LandsatScene:
         :param bands: A list of the bands to load. The default bands are 1 through 7.
         :return: self
         """
-        # TODO: Add support for band 8. And any other bands?
         if self.dataframe is not None:
             return self.dataframe
         if self._metadata is None:
