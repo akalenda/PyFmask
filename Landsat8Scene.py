@@ -293,5 +293,6 @@ if __name__ == '__main__':
          .dataframe_generate()
          .dataframe_drop_dead_pixels()
          .calculate_fmask_inputs()
-         .calculate_fmask_outputs())
-    x.write_to_geotiff(x.dataframe['whiteness'][x.dataframe['whiteness'] > 0.8], 'whiteness_mask')
+         .calculate_fmask_outputs()
+         .dataframe_write_series_to_geotiff('whiteness'))
+    x.write_to_geotiff(x.dataframe['whiteness'][x.dataframe['whiteness'] > 1.0 - 0.7], 'whiteness_mask')

@@ -90,14 +90,14 @@ def calculate_ndsi(green_reflectance: pandas.Series, swir1_reflectance: pandas.S
 
 def calculate_whiteness(blue_reflectance: pandas.Series, green_reflectance: pandas.Series,
                         red_reflectance: pandas.Series) -> pandas.Series:
-    v2_mean_vis = tt.dvector('v2_mean_vis')
-    e2_mean_vis = (v0_blue + v0_green + v0_red) / 3
-    mean_vis = theano.function([v0_blue, v0_green, v0_red],
-                               e2_mean_vis)(blue_reflectance, green_reflectance, red_reflectance)
-    e2_whiteness = 1 - (tt.abs_(v0_blue - v2_mean_vis) / v2_mean_vis + tt.abs_(v0_green - v2_mean_vis) / v2_mean_vis
-                        + tt.abs_(v0_red - v2_mean_vis) / v2_mean_vis)
-    return theano.function([v0_blue, v0_green, v0_red, v2_mean_vis],
-                           e2_whiteness)(blue_reflectance, green_reflectance, red_reflectance, mean_vis)
+    v_mv = tt.dvector('mean_vis')
+    e_mv = (v0_blue + v0_green + v0_red) / 3
+    ds_mv = theano.function([v0_blue, v0_green, v0_red], e_mv)(blue_reflectance, green_reflectance, red_reflectance)
+    e2_whiteness = 1 - (tt.abs_((v0_blue - v_mv) / v_mv)
+                        + tt.abs_((v0_green - v_mv) / v_mv)
+                        + tt.abs_((v0_red - v_mv) / v_mv))
+    return theano.function([v0_blue, v0_green, v0_red, v_mv],
+                           e2_whiteness)(blue_reflectance, green_reflectance, red_reflectance, ds_mv)
 
 
 def test_hot(blue_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
@@ -255,7 +255,6 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
     e16_l_cloud_prob = v14_l_temperature_prob * v15_variability_prob
     df['l_cloud_prob'] = theano.function([v14_l_temperature_prob, v15_variability_prob],
                                          e16_l_cloud_prob)(df['l_temperature_prob'], df['variability_prob'])
-
 
     return df
 
