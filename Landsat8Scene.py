@@ -12,7 +12,31 @@ from theano import tensor as tt
 import fmask
 from progressbar import print_progress_bar
 
-# ####### Theano variables ################
+# ################################# Constants ######################################
+EXAMPLE_SCENE_IDS = [
+    'LC80440342014077LGN00',  # SF Bay Area
+    'LC81400472015145LGN00'  # Eastern Indian seaboard, lots of clouds both thin and thick
+]
+DATA_DIRECTORY = "./data/"
+
+"""
+See: https://landsat.usgs.gov/what-are-band-designations-landsat-satellites
+"""
+LANDSAT8_BANDS = [
+    1,  # VIS: Visible spectrum, ultra blue (coastal/aerosol)
+    2,  # VIS: Visible spectrum, blue
+    3,  # VIS: Visible spectrum, green
+    4,  # VIS: Visible spectrum, red
+    5,  # NIR: Near infrared
+    6,  # SWIR 1: Shortwave infrared
+    7,  # SWIR 2: Shortwave infrared
+    # 8,  # Panchromatic -- ignored for now, as it is of different length
+    9,  # Cirrus
+    10,  # TIRS 1: Thermal infrared
+    11,  # TIRS 2: Thermal infrared
+]
+
+# ###################################### Theano variables ################
 _v_pixel_value = tt.ivector('pixelVal')
 _v_band_scaling_multiplier = tt.dscalar('bandMult')
 _v_band_scaling_additive = tt.dscalar('bandAdd')
@@ -24,12 +48,12 @@ _v_k2 = tt.dscalar('k2')
 _v_toa_radiance = tt.dvector('radiance')
 _v_float64 = tt.dvector('radiance')
 
-# ####### Theano expressions ################
+# ################################ Theano expressions ################
 _e_conversion_to_toa = _v_band_scaling_multiplier * _v_pixel_value + _v_band_scaling_additive
 _e_correction_for_sun_angle = _v_toa_uncorrected_reflectance / tt.cos(_v_solar_zenith_angle)
 _e_conversion_to_bt = _v_k2 / tt.log(_v_k1 / _v_toa_radiance + 1)  # tt.log is the natural log
 
-# ####### Theano functions ################
+# ################################ Theano functions ################
 _f_toa_uncorrected = theano.function([_v_band_scaling_multiplier, _v_pixel_value, _v_band_scaling_additive],
                                      _e_conversion_to_toa)
 _f_toa_corrected = theano.function([_v_toa_uncorrected_reflectance, _v_solar_zenith_angle], _e_correction_for_sun_angle)
@@ -48,29 +72,6 @@ class LandsatScene:
     See: https://landsat.usgs.gov/
     See: https://aws.amazon.com/public-datasets/landsat/
     """
-
-    EXAMPLE_SCENE_IDS = [
-        'LC80440342014077LGN00',
-        'LC81400472015145LGN00'
-    ]
-    DATA_DIRECTORY = "./data/"
-
-    """
-    See: https://landsat.usgs.gov/what-are-band-designations-landsat-satellites
-    """
-    LANDSAT8_BANDS = [
-        1,  # VIS: Visible spectrum, ultra blue (coastal/aerosol)
-        2,  # VIS: Visible spectrum, blue
-        3,  # VIS: Visible spectrum, green
-        4,  # VIS: Visible spectrum, red
-        5,  # NIR: Near infrared
-        6,  # SWIR 1: Shortwave infrared
-        7,  # SWIR 2: Shortwave infrared
-        # 8,  # Panchromatic -- ignored for now, as it is of different length
-        9,  # Cirrus
-        10,  # TIRS 1: Thermal infrared
-        11,  # TIRS 2: Thermal infrared
-    ]
 
     def __init__(self, scene_id: str):
         """
@@ -123,7 +124,7 @@ class LandsatScene:
         Retrieves files from the remote directory and transfers them to a local directory
         :return: self
         """
-        local_directory = '{0}{1}/'.format(self.DATA_DIRECTORY, self.scene_id)
+        local_directory = '{0}{1}/'.format(DATA_DIRECTORY, self.scene_id)
         local_url = local_directory + filename
         remote_url = remote_directory + filename
         data = http_pool_manager.request('GET', remote_url, preload_content=False).data
@@ -155,8 +156,8 @@ class LandsatScene:
             self._get_metadata()
         df = None
         print_progress_bar(0, len(bands), "Loading {} to dataframe".format(self.scene_id), length=50)
-        for band_number in self.LANDSAT8_BANDS:
-            file_path = '{0}{1}/{1}_B{2}.TIF'.format(self.DATA_DIRECTORY, self.scene_id, band_number)
+        for band_number in LANDSAT8_BANDS:
+            file_path = '{0}{1}/{1}_B{2}.TIF'.format(DATA_DIRECTORY, self.scene_id, band_number)
             with rasterio.open(file_path) as image:
                 self._profile = image.profile
                 if df is None:
@@ -177,10 +178,14 @@ class LandsatScene:
         return self
 
     def calculate_fmask_outputs(self):
-        self.dataframe['ndvi'] = fmask.calculate_ndvi(self.dataframe['band5reflectance'],
-                                                      self.dataframe['band4reflectance'])
-        self.dataframe['whiteness'] = fmask.calculate_whiteness(
-            self.dataframe['band2reflectance'], self.dataframe['band3reflectance'], self.dataframe['band4reflectance'])
+        blu = self.dataframe['band2reflectance']
+        grn = self.dataframe['band3reflectance']
+        red = self.dataframe['band4reflectance']
+        nir = self.dataframe['band5reflectance']
+        self.dataframe['ndvi'] = fmask.calculate_ndvi(nir, red)
+        self.dataframe['whiteness'] = fmask.calculate_whiteness(blu, grn, red)
+        self.dataframe['perceptual_whiteness'] = fmask.calculate_perceptual_whiteness(blu, grn, red)
+        self.dataframe['hot'] = fmask.calculate_hot(blu, red)
         return self
 
     def calculate_fmask_inputs(self):
@@ -194,7 +199,7 @@ class LandsatScene:
         :return: self
         """
         df = self.dataframe
-        for band_number in self.LANDSAT8_BANDS:
+        for band_number in LANDSAT8_BANDS:
             bn = 'band' + str(band_number)
             try:
                 radiance_mult = float(self._metadata['RADIANCE_MULT_BAND_%i' % band_number])
@@ -219,7 +224,7 @@ class LandsatScene:
 
     def _get_metadata(self):
         metadata = dict()
-        with open('{0}{1}/{1}_MTL.txt'.format(self.DATA_DIRECTORY, self.scene_id)) as metadata_file:
+        with open('{0}{1}/{1}_MTL.txt'.format(DATA_DIRECTORY, self.scene_id)) as metadata_file:
             for line in metadata_file.readlines():
                 tokens = line.split("=")
                 if len(tokens) > 1:
@@ -233,7 +238,7 @@ class LandsatScene:
         """
         :return: The directory on the local machine where we expect to find the data for this LandsatScene
         """
-        return '{0}{1}/'.format(self.DATA_DIRECTORY, self.scene_id)
+        return '{0}{1}/'.format(DATA_DIRECTORY, self.scene_id)
 
     def get_aws_directory_url(self) -> str:
         """
@@ -248,10 +253,10 @@ class LandsatScene:
         )
 
     def scene_appears_downloaded(self) -> bool:
-        if not path.exists(self.DATA_DIRECTORY):
-            makedirs(self.DATA_DIRECTORY)
+        if not path.exists(DATA_DIRECTORY):
+            makedirs(DATA_DIRECTORY)
             return False
-        return path.exists('{0}{1}/'.format(self.DATA_DIRECTORY, self.scene_id))
+        return path.exists('{0}{1}/'.format(DATA_DIRECTORY, self.scene_id))
 
     def _write_series_to_csv(self, ds: pandas.Series, filename: str):
         ds.to_csv(path='{0}{1}.csv'.format(self.get_local_directory_url(), filename), mode='w', index=True)
@@ -288,11 +293,11 @@ class LandsatScene:
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    x = (LandsatScene(LandsatScene.EXAMPLE_SCENE_IDS[1])
+    for scene in EXAMPLE_SCENE_IDS:
+        (LandsatScene(scene)
          .download_scene_from_aws(will_overwrite=False)
          .dataframe_generate()
          .dataframe_drop_dead_pixels()
          .calculate_fmask_inputs()
          .calculate_fmask_outputs()
-         .dataframe_write_series_to_geotiff('whiteness'))
-    x.write_to_geotiff(x.dataframe['whiteness'][x.dataframe['whiteness'] > 1.0 - 0.7], 'whiteness_mask')
+         .dataframe_write_series_to_geotiff('hot'))\

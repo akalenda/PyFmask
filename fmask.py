@@ -96,12 +96,24 @@ def calculate_whiteness(blue_reflectance: pandas.Series, green_reflectance: pand
     e2_whiteness = 1 - (tt.abs_((v0_blue - v_mv) / v_mv)
                         + tt.abs_((v0_green - v_mv) / v_mv)
                         + tt.abs_((v0_red - v_mv) / v_mv))
-    return theano.function([v0_blue, v0_green, v0_red, v_mv],
-                           e2_whiteness)(blue_reflectance, green_reflectance, red_reflectance, ds_mv)
+    return theano.function([v0_blue, v0_green, v0_red, v_mv], e2_whiteness)(blue_reflectance, green_reflectance,
+                                                                            red_reflectance, ds_mv)
 
 
-def test_hot(blue_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
-    e3_hot_test = 2.0 * v0_blue - v0_red > C3_HOT_OFFSET
+def calculate_perceptual_whiteness(blue_reflectance: pandas.Series, green_reflectance: pandas.Series,
+                                   red_reflectance: pandas.Series) -> pandas.Series:
+    v_mv = tt.dvector('mean_vis')
+    e_mv = 0.2126 * v0_red + 0.7152 * v0_green + 0.0722 * v0_blue
+    ds_mv = theano.function([v0_blue, v0_green, v0_red], e_mv)(blue_reflectance, green_reflectance, red_reflectance)
+    e2_whiteness = 1 - (tt.abs_((v0_blue - v_mv) / v_mv)
+                        + tt.abs_((v0_green - v_mv) / v_mv)
+                        + tt.abs_((v0_red - v_mv) / v_mv))
+    return theano.function([v0_blue, v0_green, v0_red, v_mv], e2_whiteness)(blue_reflectance, green_reflectance,
+                                                                            red_reflectance, ds_mv)
+
+
+def calculate_hot(blue_reflectance: pandas.Series, red_reflectance: pandas.Series) -> pandas.Series:
+    e3_hot_test = v0_blue - 0.5 * v0_red
     return theano.function([v0_blue, v0_red], e3_hot_test)(blue_reflectance, red_reflectance)
 
 
