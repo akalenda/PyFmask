@@ -61,6 +61,10 @@ C20151_CIRRUS_REFLECTANCE_THRESHOLD = 0.4  # Value of (scaled) band9 that conver
 # These correspond to columns in the dataframe. Not all such columns are represented, only those needed in formulae.
 # For example, we begin with v0 values.
 # Values calculated by formula2 are labelled v2, and so on.
+v1 = tt.dvector()
+v2 = tt.dvector()
+v3 = tt.dvector()
+v4 = tt.dvector()
 v0_blue = tt.dvector('v0_blue')
 v0_green = tt.dvector('v0_green')
 v0_red = tt.dvector('v0_red')
@@ -117,22 +121,16 @@ def calculate_hot(blue_reflectance: pandas.Series, red_reflectance: pandas.Serie
     return theano.function([v0_blue, v0_red], e3_hot_test)(blue_reflectance, red_reflectance)
 
 
-def test_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Series) -> pandas.Series:
-    e4_b4b5_test = v0_nir > 0.75 * v0_swir1
+def calculate_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Series) -> pandas.Series:
+    e4_b4b5_test = v0_nir / v0_swir1
     return theano.function([v0_nir, v0_swir1], e4_b4b5_test)(nir_reflectance, swir1_reflectance)
 
 
 def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: pandas.Series, ndvi: pandas.Series):
-    e1_basic_test = tt.and_(
-        tt.and_(
-            tt.lt(C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS, v0_swir2),
-            tt.lt(v0_bt1, C1_MAX_BT_OF_CLOUDS)
-        ),
-        tt.and_(
-            tt.lt(v1_ndsi, C1_MAX_NDSI_OF_CLOUDS),
-            tt.lt(v1_ndvi, C1_MAX_NDVI_OF_CLOUDS)
-        )
-    )
+    e1_basic_test = (1 / (1 + tt.exp(200 * (C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS - v0_swir2)))
+                     + 1 / (1 + tt.exp(200 * (v0_bt1 - C1_MAX_BT_OF_CLOUDS)))
+                     + 1 / (1 + tt.exp(200 * (v1_ndsi - C1_MAX_NDSI_OF_CLOUDS)))
+                     + 1 / (1 + tt.exp(200 * (v1_ndvi - C1_MAX_NDVI_OF_CLOUDS)))) / 4
     return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
@@ -155,6 +153,11 @@ def calculate_w_temperature_prob(swir1_reflectance_of_clearskies_over_water: pan
                                   C8_PERCENTILE_FOR_CLEARSKY_WATER_TEMPERATURE)
     e9_w_temperature_prob = (c8_t_water - v0_bt1) / 4
     return theano.function([v0_bt1], e9_w_temperature_prob)(tirs1_bt)
+
+
+def calculate_pcp(basic: pandas.Series, whiteness: pandas.Series, hot: pandas.Series, b4b5: pandas.Series):
+    e_pcp = v1 * v2 * v3 * v4
+    return theano.function([v1, v2, v3, v4], e_pcp)(basic, whiteness, hot, b4b5)
 
 
 def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
@@ -269,5 +272,3 @@ def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
                                          e16_l_cloud_prob)(df['l_temperature_prob'], df['variability_prob'])
 
     return df
-
-# ######################### EXAMPLE USAGE ######################################

@@ -182,10 +182,18 @@ class LandsatScene:
         grn = self.dataframe['band3reflectance']
         red = self.dataframe['band4reflectance']
         nir = self.dataframe['band5reflectance']
-        self.dataframe['ndvi'] = fmask.calculate_ndvi(nir, red)
-        self.dataframe['whiteness'] = fmask.calculate_whiteness(blu, grn, red)
-        self.dataframe['perceptual_whiteness'] = fmask.calculate_perceptual_whiteness(blu, grn, red)
-        self.dataframe['hot'] = fmask.calculate_hot(blu, red)
+        swir1 = self.dataframe['band6reflectance']
+        swir2 = self.dataframe['band7reflectance']
+        tirs1 = self.dataframe['band10bt']
+        ndsi = self.dataframe['ndsi'] = fmask.calculate_ndsi(grn, swir1)
+        ndvi = self.dataframe['ndvi'] = fmask.calculate_ndvi(nir, red)
+        basic = self.dataframe['basic'] = fmask.test_basic(swir2, tirs1, ndsi, ndvi)
+        whiteness = self.dataframe['whiteness'] = fmask.calculate_whiteness(blu, grn, red)
+        # self.dataframe['perceptual_whiteness'] = fmask.calculate_perceptual_whiteness(blu, grn, red)
+        hot = self.dataframe['hot'] = fmask.calculate_hot(blu, red)
+        b4b5 = self.dataframe['b4b5'] = fmask.calculate_b4b5(nir, swir1)
+        # self.dataframe['water'] = fmask.calculate_water(nir, ndvi)
+        self.dataframe['pcp'] = fmask.calculate_pcp(basic, whiteness, hot, b4b5)
         return self
 
     def calculate_fmask_inputs(self):
@@ -300,4 +308,6 @@ if __name__ == '__main__':
          .dataframe_drop_dead_pixels()
          .calculate_fmask_inputs()
          .calculate_fmask_outputs()
-         .dataframe_write_series_to_geotiff('hot'))\
+         .dataframe_write_series_to_geotiff('water')
+         .dataframe_write_series_to_geotiff('basic')
+         .dataframe_write_series_to_geotiff('pcp'))
