@@ -134,16 +134,14 @@ def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: 
     return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
-def test_clearsky_water(swir2_reflectance: pandas.Series) -> pandas.Series:
-    # Combines the two expressions of formula 5 with that of formula 7
-    e7_clearsky_water = tt.and_(
-        tt.or_(
-            tt.and_(v1_ndvi < 0.01, v0_nir < 0.11),
-            tt.and_(v1_ndvi < NDVI_WATER_LAND_THRESHOLD, v0_nir < 0.05)
-        ),
-        v0_swir2 < C7_MIN_SWIR_OF_CLOUD
-    )
-    return theano.function([v0_swir2], e7_clearsky_water)(swir2_reflectance)
+def calculate_water(nir_reflectance: pandas.Series, ndvi: pandas.Series):
+    e_water = 1 - v0_nir / (1 + tt.exp(20 * (0.06 - (v1_ndvi + 1))))
+    return theano.function([v0_nir, v1_ndvi], e_water)(nir_reflectance, ndvi)
+
+
+def test_clearsky_water(water: pandas.Series, swir2_reflectance: pandas.Series) -> pandas.Series:
+    e7_clearsky_water = v1 * 1 / (1 + tt.exp(20 * (v0_swir2 - 0.03)))
+    return theano.function([v1, v0_swir2], e7_clearsky_water)(water, swir2_reflectance)
 
 
 def calculate_w_temperature_prob(swir1_reflectance_of_clearskies_over_water: pandas.Series,
