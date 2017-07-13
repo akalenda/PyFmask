@@ -14,8 +14,11 @@ from progressbar import print_progress_bar
 
 # ################################# Constants ######################################
 EXAMPLE_SCENE_IDS = [
-    'LC80440342014077LGN00',  # SF Bay Area
-    'LC81400472015145LGN00'  # Eastern Indian seaboard, lots of clouds both thin and thick
+    'LC80440342014077LGN00',  # SF Bay Area, sunny and clear skies
+    'LC80440342015080LGN00',  # SF Bay Area, various clouds
+    'LC81400472015145LGN00',  # Eastern Indian seaboard, lots of clouds both thin and thick
+    'LC81840442015149LGN00',  # Middle of Sahara Desert
+    'LC80110092015121LGN00',  # Greenland, mostly ice, a bit of water flow
 ]
 DATA_DIRECTORY = "./data/"
 
@@ -185,9 +188,9 @@ class LandsatScene:
         swir1 = self.dataframe['band6reflectance']
         swir2 = self.dataframe['band7reflectance']
         tirs1 = self.dataframe['band10bt']
-        # ndsi = self.dataframe['ndsi'] = fmask.calculate_ndsi(grn, swir1)
+        ndsi = self.dataframe['ndsi'] = fmask.calculate_ndsi(grn, swir1)
         ndvi = self.dataframe['ndvi'] = fmask.calculate_ndvi(nir, red)
-        # basic = self.dataframe['basic'] = fmask.test_basic(swir2, tirs1, ndsi, ndvi)
+        basic = self.dataframe['basic'] = fmask.test_basic(swir2, tirs1, ndsi, ndvi)
         # whiteness = self.dataframe['whiteness'] = fmask.calculate_whiteness(blu, grn, red)
         # self.dataframe['perceptual_whiteness'] = fmask.calculate_perceptual_whiteness(blu, grn, red)
         # hot = self.dataframe['hot'] = fmask.calculate_hot(blu, red)
@@ -302,11 +305,12 @@ class LandsatScene:
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    for scene in EXAMPLE_SCENE_IDS:
+    for scene in [EXAMPLE_SCENE_IDS[4]]:
         (LandsatScene(scene)
          .download_scene_from_aws(will_overwrite=False)
          .dataframe_generate()
          .dataframe_drop_dead_pixels()
          .calculate_fmask_inputs()
          .calculate_fmask_outputs()
-         .dataframe_write_series_to_geotiff('clearsky_water'))
+         .dataframe_write_series_to_geotiff('ndvi')
+         .dataframe_write_series_to_geotiff('water'))

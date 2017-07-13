@@ -128,14 +128,24 @@ def calculate_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Ser
 
 def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: pandas.Series, ndvi: pandas.Series):
     e1_basic_test = (1 / (1 + tt.exp(200 * (C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS - v0_swir2)))
-                     + 1 / (1 + tt.exp(200 * (v0_bt1 - C1_MAX_BT_OF_CLOUDS)))
-                     + 1 / (1 + tt.exp(200 * (v1_ndsi - C1_MAX_NDSI_OF_CLOUDS)))
-                     + 1 / (1 + tt.exp(200 * (v1_ndvi - C1_MAX_NDVI_OF_CLOUDS)))) / 4
+                     * 1 / (1 + tt.exp(200 * (v0_bt1 - C1_MAX_BT_OF_CLOUDS)))
+                     * 1 / (1 + tt.exp(200 * (v1_ndsi - C1_MAX_NDSI_OF_CLOUDS)))
+                     * 1 / (1 + tt.exp(200 * (v1_ndvi - C1_MAX_NDVI_OF_CLOUDS))))
     return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
+def logistic_function(lt, gt, width_factor=200):
+    return 1 / (1 + tt.exp(width_factor * (lt - gt)))
+
+
+def probabilistic_or(probability_a, probability_b):
+    return probability_a + probability_b - probability_a * probability_b
+
+
 def calculate_water(nir_reflectance: pandas.Series, ndvi: pandas.Series):
-    e_water = 1 - v0_nir / (1 + tt.exp(20 * (0.06 - (v1_ndvi + 1))))
+    part1 = logistic_function((v1_ndvi + 1) / 2, 0.505) * logistic_function(v0_nir, 0.11)
+    part2 = logistic_function((v1_ndvi + 1) / 2, 0.550) * logistic_function(v0_nir, 0.05)
+    e_water = probabilistic_or(part1, part2)
     return theano.function([v0_nir, v1_ndvi], e_water)(nir_reflectance, ndvi)
 
 
