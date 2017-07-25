@@ -134,7 +134,7 @@ def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: 
     return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
-def logistic_function(lt, gt, width_factor=200):
+def logistic_function(lt: float, gt: float, width_factor=200.0):
     return 1 / (1 + tt.exp(width_factor * (lt - gt)))
 
 
@@ -150,7 +150,7 @@ def calculate_water(nir_reflectance: pandas.Series, ndvi: pandas.Series):
 
 
 def test_clearsky_water(water: pandas.Series, swir2_reflectance: pandas.Series) -> pandas.Series:
-    e7_clearsky_water = v1 * 1 / (1 + tt.exp(20 * (v0_swir2 - 0.03)))
+    e7_clearsky_water = v1 * logistic_function(20, v0_swir2, 9999)
     return theano.function([v1, v0_swir2], e7_clearsky_water)(water, swir2_reflectance)
 
 
