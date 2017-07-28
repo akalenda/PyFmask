@@ -134,7 +134,7 @@ def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: 
     return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
-def logistic_function(lt: float, gt: float, width_factor=200.0):
+def logistic_function(lt: float, gt: float, width_factor=1.0):
     return 1 / (1 + tt.exp(width_factor * (lt - gt)))
 
 
@@ -143,14 +143,14 @@ def probabilistic_or(probability_a, probability_b):
 
 
 def calculate_water(nir_reflectance: pandas.Series, ndvi: pandas.Series):
-    part1 = logistic_function((v1_ndvi + 1) / 2, 0.505) * logistic_function(v0_nir, 0.11)
-    part2 = logistic_function((v1_ndvi + 1) / 2, 0.550) * logistic_function(v0_nir, 0.05)
-    e_water = probabilistic_or(part1, part2)
-    return theano.function([v0_nir, v1_ndvi], e_water)(nir_reflectance, ndvi)
+    land_vs_water = logistic_function(v1_ndvi, .2, 9) * logistic_function(v0_nir, 0.11, 9)
+    cloud_vs_water = logistic_function(v1_ndvi, .3, 9) * logistic_function(v0_nir, 0.05, 9)
+    e_water = probabilistic_or(land_vs_water, cloud_vs_water)
+    return theano.function([v1_ndvi, v0_nir], e_water)(ndvi, nir_reflectance)
 
 
 def test_clearsky_water(water: pandas.Series, swir2_reflectance: pandas.Series) -> pandas.Series:
-    e7_clearsky_water = v1 * logistic_function(20, v0_swir2, 9999)
+    e7_clearsky_water = v1 * logistic_function(v0_swir2, 0.03, 20)
     return theano.function([v1, v0_swir2], e7_clearsky_water)(water, swir2_reflectance)
 
 

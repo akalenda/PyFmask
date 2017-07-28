@@ -305,13 +305,14 @@ class LandsatScene:
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    for scene in EXAMPLE_SCENE_IDS:
+    for scene in [EXAMPLE_SCENE_IDS[2]]:
         ls = (LandsatScene(scene)
               .download_scene_from_aws(will_overwrite=False)
               .dataframe_generate()
               .dataframe_drop_dead_pixels()
               .calculate_fmask_inputs()
               .calculate_fmask_outputs()
-              .dataframe_write_series_to_geotiff('water'))
+              .dataframe_write_series_to_geotiff('water')
+              .dataframe_write_series_to_geotiff('clearsky_water'))
 
 
