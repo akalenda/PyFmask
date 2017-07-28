@@ -205,7 +205,7 @@ class LandsatScene:
         The GeoTIFFs we read have uint16 values, not in the units we want. But each scene is accompanied by a
         metadata file that has values -- some global, some for specific bands -- that we can use to convert the pixel
         values into floating point values of the appropriate units. Therefore, typically when using the data, you would
-        not want to use for example the "band2" data series, but instead the "band2_reflectance_corrected" series.
+        not want to use for example the "band2" data series, but instead the "band2reflectance" series.
 
         See: https://landsat.usgs.gov/using-usgs-landsat-8-product
         :return: self
@@ -305,12 +305,14 @@ class LandsatScene:
 
 # ######################### EXAMPLE USAGE ######################################
 if __name__ == '__main__':
-    for scene in [EXAMPLE_SCENE_IDS[4]]:
-        (LandsatScene(scene)
-         .download_scene_from_aws(will_overwrite=False)
-         .dataframe_generate()
-         .dataframe_drop_dead_pixels()
-         .calculate_fmask_inputs()
-         .calculate_fmask_outputs()
-         .dataframe_write_series_to_geotiff('ndvi')
-         .dataframe_write_series_to_geotiff('water'))
+    for scene in [EXAMPLE_SCENE_IDS[2]]:
+        ls = (LandsatScene(scene)
+              .download_scene_from_aws(will_overwrite=False)
+              .dataframe_generate()
+              .dataframe_drop_dead_pixels()
+              .calculate_fmask_inputs()
+              .calculate_fmask_outputs()
+              .dataframe_write_series_to_geotiff('water')
+              .dataframe_write_series_to_geotiff('clearsky_water'))
+
+
