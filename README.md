@@ -15,7 +15,7 @@ You will need the following installed:
 - [Python3](https://www.python.org/downloads/)
 - [Theano](http://deeplearning.net/software/theano/install.html)
 - [Pandas](https://pandas.pydata.org/pandas-docs/stable/install.html)
-- [Rasterio](https://github.com/mapbox/rasterio)
+- [Rasterio](https://mapbox.github.io/rasterio/installation.html)
 
 We do not yet have a proper Python package. You will need to download the repository
 and localize it to your current working directory. I.e:
