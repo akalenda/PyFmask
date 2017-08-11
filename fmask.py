@@ -1,3 +1,8 @@
+import numpy
+import pandas
+import theano
+import theano.tensor as tt
+
 # ######################## References #################################
 # Zhu, Zhe, and Curtis E. Woodcock.
 # "Object-based cloud and cloud shadow detection in Landsat imagery."
@@ -32,12 +37,7 @@
 # produced are stored as new columns in the table. This table can then be written to a new
 # file, preserving both intermediary and final results for each pixel.
 #
-##########################################################################
-
-import numpy
-import pandas
-import theano
-import theano.tensor as tt
+# #########################################################################
 
 """
 Constants rom [Zhu 2012]. A variety of constants sprinkled throughout the white-paper.
@@ -72,10 +72,11 @@ v0_nir = tt.dvector('v0_nir')
 v0_swir1 = tt.dvector('v0_swir1')
 v0_swir2 = tt.dvector('v0_swir2')
 v0_cirrus = tt.dvector('v0_cirrus')
-v0_bt1 = tt.dvector('v0_bt1')
+v0_tirs1_bt = tt.dvector('v0_tirs1_bt')
 v1_ndsi = tt.dvector('v1_ndsi')
 v1_ndvi = tt.dvector('v1_ndvi')
 v2_whiteness = tt.dvector('v2_whiteness')
+v7_clearsky_water = tt.dvector('v7_clearsky_water')
 v10_brightness_prob = tt.dvector('v10_brightness_prob')
 v20151_cirrus_cloud_probability = tt.dvector('v0_cirrus')
 v14_l_temperature_prob = tt.dvector('v14_l_temperature_prob')
@@ -128,39 +129,16 @@ def calculate_b4b5(nir_reflectance: pandas.Series, swir1_reflectance: pandas.Ser
 
 def test_basic(swir2_reflectance: pandas.Series, tirs1_bt: pandas.Series, ndsi: pandas.Series, ndvi: pandas.Series):
     e1_basic_test = (1 / (1 + tt.exp(200 * (C1_MIN_BAND7_TOA_REFLECTANCE_OF_CLOUDS - v0_swir2)))
-                     * 1 / (1 + tt.exp(200 * (v0_bt1 - C1_MAX_BT_OF_CLOUDS)))
+                     * 1 / (1 + tt.exp(200 * (v0_tirs1_bt - C1_MAX_BT_OF_CLOUDS)))
                      * 1 / (1 + tt.exp(200 * (v1_ndsi - C1_MAX_NDSI_OF_CLOUDS)))
                      * 1 / (1 + tt.exp(200 * (v1_ndvi - C1_MAX_NDVI_OF_CLOUDS))))
-    return theano.function([v0_swir2, v0_bt1, v1_ndsi, v1_ndvi], e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
-
-
-def logistic_function(lt: float, gt: float, width_factor=1.0):
-    return 1 / (1 + tt.exp(width_factor * (lt - gt)))
-
-
-def probabilistic_or(probability_a, probability_b):
-    return probability_a + probability_b - probability_a * probability_b
+    return theano.function([v0_swir2, tirs1_bt, v1_ndsi, v1_ndvi],
+                           e1_basic_test)(swir2_reflectance, tirs1_bt, ndsi, ndvi)
 
 
 def calculate_water(nir_reflectance: pandas.Series, ndvi: pandas.Series):
-    land_vs_water = logistic_function(v1_ndvi, .2, 9) * logistic_function(v0_nir, 0.11, 9)
-    cloud_vs_water = logistic_function(v1_ndvi, .3, 9) * logistic_function(v0_nir, 0.05, 9)
-    e_water = probabilistic_or(land_vs_water, cloud_vs_water)
+    e_water = logistic_function(v1_ndvi, .2, 9) * logistic_function(v0_nir, 0.11, 9)
     return theano.function([v1_ndvi, v0_nir], e_water)(ndvi, nir_reflectance)
-
-
-def test_clearsky_water(water: pandas.Series, swir2_reflectance: pandas.Series) -> pandas.Series:
-    e7_clearsky_water = v1 * logistic_function(v0_swir2, 0.03, 20)
-    return theano.function([v1, v0_swir2], e7_clearsky_water)(water, swir2_reflectance)
-
-
-def calculate_w_temperature_prob(swir1_reflectance_of_clearskies_over_water: pandas.Series,
-                                 tirs1_bt: pandas.Series) -> pandas.Series:
-    # noinspection PyTypeChecker
-    c8_t_water = numpy.percentile(swir1_reflectance_of_clearskies_over_water,
-                                  C8_PERCENTILE_FOR_CLEARSKY_WATER_TEMPERATURE)
-    e9_w_temperature_prob = (c8_t_water - v0_bt1) / 4
-    return theano.function([v0_bt1], e9_w_temperature_prob)(tirs1_bt)
 
 
 def calculate_pcp(basic: pandas.Series, whiteness: pandas.Series, hot: pandas.Series, b4b5: pandas.Series):
@@ -168,115 +146,130 @@ def calculate_pcp(basic: pandas.Series, whiteness: pandas.Series, hot: pandas.Se
     return theano.function([v1, v2, v3, v4], e_pcp)(basic, whiteness, hot, b4b5)
 
 
-def fmask(df: pandas.DataFrame) -> pandas.DataFrame:
-    # ############################### DataFrame column aliases ##########################################
-    df_swir1 = df['band6_reflectance_corrected']
-    df_cirrus = df['band9_reflectance_corrected']
-    df_bt1 = df['band10_bt']
+def calculate_clearsky_water(water: pandas.Series, swir2_reflectance: pandas.Series) -> pandas.Series:
+    e7_clearsky_water = v1 * logistic_function(v0_swir2, 0.03, 20)
+    return theano.function([v1, v0_swir2], e7_clearsky_water)(water, swir2_reflectance)
 
-    # ################ Formulae from [Zhu 2012] #######################################################
-    """
-    This test cuts out pixels that are clearly just snow or vegetation, or that are too warm to be clouds.
-    """
-    print('Formula1')
 
+def calculate_water_temperature(clearsky_water: pandas.Series, tirs1_bt: pandas.Series,
+                                percentile_theshold=82.5) -> float:
     """
-    Formula 5 from [Zhu 2012] is split into three parts, as each may be useful in its own right.
-    This one is true if the pixel suggests thin clouds over water.
-    """
-    print('Formula5a')
+    This formulation is significantly different from that which is presented in the whitepaper: a necessity driven by
+    the use of logistic functions instead of boolean masks. The idea behind the original formulation was that it masked
+    out pixels that do not have clear skies over them. The pixels that remain have an unobstructed view of water. Even
+    these pixels have atmospheric influences that make the water appear colder, therefore the upper level
+    (82.5th percentile) is taken to exclude such influences.
 
-    """
-    This one suggests clear skies over water if true.
-    """
-    print('Formula5b')
+    First, we seek to reduce the atmospheric influences on our final data by creating a set of weights. We use the
+    minimum and maximum TIRS1 values to rescale the tirs1_bt data series from 0 to 1. Then, we find the 82.5th
+    percentile of the series within that scaling. We want to create a logistic function that is near-zero at zero, and
+    near-one at the percentile.
 
+    We then take the weighted average of the tirs1_bt series, using two sets of weights: the set we just created, and
+    the set from clearsky_water. The result is our estimated water temperature.
     """
-    This one evaluates to True if it is definitely water, either with clear skies or thin cloud. False if it is land, 
-    thick clouds over land, or thick clouds over water.
-    """
-    print('Formula5c')
+    clarity_of_atmosphere = logistic_percentile(tirs1_bt, percentile_theshold)
+    return doubly_weighted_average(tirs1_bt, clearsky_water, clarity_of_atmosphere)
 
-    """
-    This test produces true values for pixels that have a high probability of being cloud.
-    It labels it as a Potential Cloud Pixel (PCP).
-    """
-    print('Formula6')
-    df['pcp'] = df['basic_test'] & df['whiteness_test'] & df['hot_test'] & df['b4b5_test']
 
-    """
-    This further refines the Water Test of formula 5 to take advantage of the newer, second short-wave infrared band.
-    """
-    # TODO: Shouldn't this just be folded into the original test then?
-    print('Formula7')
+def calculate_w_temperature_prob(water_temperature: float, tirs1_bt: pandas.Series,
+                                 normalization_factor=4.0) -> pandas.Series:
+    expr = (water_temperature - v0_tirs1_bt) / normalization_factor
+    return theano.function([v0_tirs1_bt], expr)(tirs1_bt)
 
+
+def calculate_brightness_prob(swir1_reflectance: pandas.Series, max_water_swir1_reflectance=0.11) -> pandas.Series:
+    expr = tt.min(v0_swir1, max_water_swir1_reflectance) / max_water_swir1_reflectance
+    return theano.function([v0_swir1], expr)(swir1_reflectance)
+
+
+def calculate_w_cloud_prob(w_temperature_prob: pandas.Series, brightness_prob: pandas.Series) -> pandas.Series:
+    return theano.function([v1, v2], v1 * v2)(w_temperature_prob, brightness_prob)
+
+
+def calculate_clearsky_land(pcp: pandas.Series, water: pandas.Series) -> pandas.Series:
+    expr = (1 - v1) * (1 - v2)
+    return theano.function([v1, v2], expr)(pcp, water)
+
+
+def calculate_land_temperature_prob(clearsky_land: pandas.Series, tirs1_bt: pandas.Series,
+                     lower_percentile=17.5, upper_percentile=82.5) -> (float, float):
+    t_lo = doubly_weighted_average(tirs1_bt, clearsky_land, logistic_percentile(tirs1_bt, lower_percentile))
+    t_hi = doubly_weighted_average(tirs1_bt, clearsky_land, logistic_percentile(tirs1_bt, upper_percentile))
+    expr = (t_hi + 4 - v0_tirs1_bt) / (t_hi + 4 - (t_lo - 4))
+    return theano.function([v0_tirs1_bt], expr)(tirs1_bt)
+
+
+# ###################### Auxillary functions #######################################################################
+
+
+def logistic_function(lt: float, gt: float, width_factor=1.0):
     """
-    For pixels which are water under clear skies, estimate the temperature
+    An important note here is that one or both of lt and gt need to be a Theano variable representing a float.
+    For example, suppose I want to make a comparison similar to 0.1 < SWIR1 < 0.5. I break that into two parts:
+        p1 = 0.1 < SWIR1
+        p2 = SWIR1 < 0.5
+        p3 = p1 and p2
+    which then becomes, in terms of logistic functions:
+        v = tt.dvector()
+        p1 = logistic_function(0.1, v)
+        p2 = logistic_function(v, 0.5)
+        p3 = p1 * p2
+        p4 = theano.function([v], p3)(SWIR1)
+    which can of course be shortened to one or two lines if desired. The result is a vector that is greater than 0.5
+    approaching 1 when 0.1 < SWIR1 < 0.5, and is less than 0.5 approaching 0 when it is not.
     """
-    print('Formula8')
-    # TODO: What if all the water is under clouds? What if there's no water at all?
+    return 1 / (1 + tt.exp(width_factor * (lt - gt)))
+
+
+def logistic_percentile(s: pandas.Series, percentile: float, inverted=False, scaling_series=None) -> pandas.Series:
+    """
+    This creates a logistic function that is near-zero at the series' minimum, and near-one as values reach and exceed
+    the given percentile in the series. It then returns the series evaluated according to this function.
+
+    In other words, it creates a vector of weights that may be applied to the original series. These weights are in the
+    interval [0,1]. At the lowest values in the series, the weight is at or near 0. As values increase, so too do the
+    weights until, at or above the given percentile, the weight is at or near 1.
+
+    Internal to the function, we can approximate this by setting the logistic function's threshold value to be
+    half the percentile, and then determine its scaling factor with the hyperbolic function. We scale the series from
+    zero to one so that this hyperbolic function has consistent results. We then evaluate the scaled series according
+    to the logistic function.
+
+    If inverted is set to True, then the graph is flipped. E.g. instead of f(x), 1-f(x).
+
+    scaling_series is an optional parameter provided for convenience. If a pandas.Series is given, then that series
+    is treated as a vector of scalars/weights/factors/whatever that is simply multiplied in after all else is done.
+    """
+    scaled = scale_from_zero_to_one(s)
     # noinspection PyTypeChecker
+    percentile = numpy.percentile(scaled, percentile)
+    expr = logistic_function(v1, percentile / 2, width_factor=(9.5 / percentile))
+    expr = 1 - expr if inverted else expr
+    if scaling_series is None:
+        return theano.function([v1], expr)(scaled)
+    else:
+        return theano.function([v1, v2], expr * v2)(scaled, scaling_series)
 
-    """
-    """
-    print('Formula10')
-    e10_brightness_prob = tt.clip(v0_swir1 / C10_MAX_WATER_REFLECTANCE, -999999, 1.0)
-    df['brightness_prob'] = theano.function([v0_swir1], e10_brightness_prob)(df_swir1)
 
-    """
-    From [Zhu, 2015]
-    This uses the cirrus cloud band 9 to account for high-altitude clouds.
-    See: https://landsat.usgs.gov/how-is-landsat-8s-cirrus-band-9-used
-    """
-    print('2015, Formula1')
-    e20151_cirrus_cloud_probability = v0_cirrus / C20151_CIRRUS_REFLECTANCE_THRESHOLD
-    df['cirrus_cloud_probability'] = theano.function([v0_cirrus], e20151_cirrus_cloud_probability)(df_cirrus)
+def weighted_sum(s: pandas.Series, weights: pandas.Series) -> float:
+    return theano.function([v1, v2], v1 * v2)(s, weights).sum()
 
-    """
-    """
-    print('Formula11 replaced by 2015 Formula 2')
-    e11_w_cloud_prob = v10_brightness_prob + v20151_cirrus_cloud_probability
-    df['w_cloud_prob'] = theano.function([v10_brightness_prob, v20151_cirrus_cloud_probability],
-                                         e11_w_cloud_prob)(df['brightness_prob'], df['cirrus_cloud_probability'])
 
-    """
-    """
-    print('Formula12')
-    df['clearsky_land'] = ~df['pcp'] & ~df['water_test']
+def doubly_weighted_average(s: pandas.Series, weight_set1: pandas.Series, weight_set2: pandas.Series) -> float:
+    total_weight = weighted_sum(weight_set1, weight_set2)
+    return theano.function([v1, v2, v3], v1 * v2 * v3)(s, weight_set1, weight_set2).sum() / total_weight
 
-    """
-    """
-    print('Formula13')
-    df13_clearskyland = df[df['clearsky_land']]
-    df13_clearskyland_bt = df13_clearskyland['band6_reflectance_corrected']
-    # noinspection PyTypeChecker
-    c13_t_lo = numpy.percentile(df13_clearskyland_bt, C13_LOWER_PERCENTILE_FOR_CLEARSKY_LAND)
-    # noinspection PyTypeChecker
-    c13_t_hi = numpy.percentile(df13_clearskyland_bt, C13_UPPER_PERCENTILE_FOR_CLEARSKY_LAND)
 
+def scale_from_zero_to_one(s: pandas.Series) -> pandas.Series:
     """
+    This function returns a series parallel to the one given, scaled linearly such that its minimum value is now 0
+    and its maximum value is now 1.
     """
-    print('Formula14')
-    c14_temperature_magnitude = c13_t_hi - c13_t_lo
-    e14_l_temperature_prob = (c13_t_hi + 4 - v0_bt1) / c14_temperature_magnitude
-    df['l_temperature_prob'] = theano.function([v0_bt1], e14_l_temperature_prob)(df_bt1)
+    expr = (v1 - s.min()) / (s.max() - s.min())
+    return theano.function([v1], expr)(s)
 
-    """
-    """
-    print("Formula15")
-    # TODO: The whitepaper explanation is weird about this one. It's talking about saturation of one band, and another
-    # band being larger than the other... but I think it's basically just saying that negative values for ndvi and
-    # ndsi are cropped to zero. At which point the absolute values don't do anything. And we don't even need to modify
-    # the ndsi/ndvi values, we can just make zero a minimum for our max function. Is that right???
-    e15_variability_prob = (tt.max([0, v1_ndvi, v1_ndsi, v2_whiteness]))
-    df['variability_prob'] = theano.function([v1_ndvi, v1_ndsi, v2_whiteness],
-                                             e15_variability_prob)(df['ndvi'], df['ndsi'], df['whiteness'])
 
-    """
-    """
-    print("Formula16")
-    e16_l_cloud_prob = v14_l_temperature_prob * v15_variability_prob
-    df['l_cloud_prob'] = theano.function([v14_l_temperature_prob, v15_variability_prob],
-                                         e16_l_cloud_prob)(df['l_temperature_prob'], df['variability_prob'])
+def probabilistic_or(p1, p2):
+    return p1 + p2 - (p1 * p2)
 
-    return df
